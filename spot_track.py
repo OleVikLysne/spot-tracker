@@ -1,13 +1,24 @@
 from rich.table import Table
 from rich.console import Console
-from utils import average, stdev, load_json, dump_json, get_current_season_id, get_first_season_id, update_config
+from utils import average, stdev, load_json, dump_json, get_current_season_id, get_first_season_id, update_config, get_track_data_path, get_track_path
 from enum import Enum
 import re
+from pathlib import Path
+from time import sleep
 
 QUERY_TYPE = Enum("QUERY_TYPES", ["ADD", "REVERT", "AVERAGE", "FIRST_X", "LAST_X", "SEASON_X", "NEW_SEASON", "TRACK_DATA", "DIST", "HELP"])
-TRACK_DATA_PATH = "backup.json"
-TRACKS: dict = load_json("tracks.json")
+TRACK_DATA_PATH = get_track_data_path()
+TRACKS: dict = load_json(get_track_path())
 
+
+def initialise() -> bool:
+    if get_first_season_id() != get_current_season_id():
+        return False
+    new_entry = f"season_{get_first_season_id()}"
+    json = {new_entry : {}}
+    dump_json(TRACK_DATA_PATH, json)
+    return True
+    
 
 def get_query_type(query: str) -> QUERY_TYPE:
     if query == "avg" or query == "average":
@@ -31,9 +42,9 @@ def get_query_type(query: str) -> QUERY_TYPE:
     if len(args) == 2 and args[0] == "first" and args[1].isnumeric():
         return QUERY_TYPE.FIRST_X
     if (
-        (query == "cur" or query == "current") or
-        (len(args) == 2 and args[0] == "season" and args[1].isnumeric()) or
-        (len(args) == 1 and query[0] == "s" and query[1:].isnumeric())
+        len(args) == 1 and (args[0] == "cur" or args[0] == "current") or
+        bool(re.match(r"^s ?[1-9][0-9]*( [1-9][0-9]*)* ?$", query)) or
+        bool(re.match(r"^season ?[1-9][0-9]*( [1-9][0-9]*)* ?$", query))
     ):
         return QUERY_TYPE.SEASON_X
     return None
@@ -74,8 +85,7 @@ def get_macro_info(df: dict) -> tuple:
     races_played = sum(len(x) for x in df.values())
     total_pts_scored = sum(sum(df.values(), []))
     overall_avg = round(total_pts_scored*12/races_played, 1)
-    total_mogis = int(round(races_played/12, 0))
-    return overall_avg, total_mogis
+    return overall_avg, races_played
 
 
 def display_table(
@@ -155,35 +165,40 @@ def help():
 
 
 def print_dist_table(df: dict, title: str = None) -> None:
-    _, total_mogis = get_macro_info(df)
+    _, total_races = get_macro_info(df)
     data_array = [
         (
             track, # Track name
-            "{:.0%}".format(len(scores)/total_mogis), # percentage
+            "{:.0%}".format(len(scores)*12/total_races), # percentage
             round(average(scores), 1), # Average score
         )
         for track, scores in df.items()
     ]
     data_array.sort(key = lambda x: float(x[1].strip("%")) / 100.0, reverse=True)
+    total_mogis = int(round(total_races/12, 0))
     title = f"Track distribution across {total_mogis} mogis" if title is None else title
     display_table(data_array, "track", "%", "avg", title=title)
 
 
-def print_avg_table(df: dict, title:str = None) -> None:
+def print_avg_table(df: dict, title: str = None, title_header: str = None) -> None:
+    if len(df) == 0: return
     data_array = [
         (
             track, # Track name
             round(average(scores), 1), # Average score
             len(scores), # Number of races played
             round(stdev(scores), 1) # standard deviation
-        ) 
+        )
         for track, scores in df.items()
     ]
     data_array.sort(key = lambda x : x[1], reverse=True)
 
     if title is None:
-        overall_avg, total_mogis = get_macro_info(df)
+        overall_avg, total_races = get_macro_info(df)
+        total_mogis = int(round(total_races/12, 0))
         title = f"{total_mogis} mogis with a {overall_avg} average"
+    if title_header is not None:
+        title = title_header + "\n" + title
     
     display_table(data_array, "track", "avg", "races", "STDev", title=title)
 
@@ -193,8 +208,15 @@ if __name__ == "__main__":
     FIRST_SEASON = get_first_season_id()
     CURRENT_SEASON = get_current_season_id()
 
+    if not Path(TRACK_DATA_PATH).exists():
+        if not initialise():
+            print("Initialization failed. Check your settings.ini and make sure current and first is the same value.")
+            sleep(10)
+            exit()
+
     while True:
-        query = input("Query: ").lower()
+        query = input("\nQuery: ").lower()
+        print()
         query_type = get_query_type(query)
         args = query.split()
 
@@ -209,16 +231,18 @@ if __name__ == "__main__":
                 continue
             else:
                 add_race(track, pts)
+                print(f'Added {pts} pts to {track}. If this was a mistake, type "{track} revert"')
         
 
         elif query_type == QUERY_TYPE.REVERT:
             track = args[0]
             revert_race(track)
+            print(f"{track} has been reverted.")
 
 
         elif query_type == QUERY_TYPE.AVERAGE:
             df = get_seasons(*(s_id for s_id in range(FIRST_SEASON, CURRENT_SEASON+1)))
-            print_avg_table(df)
+            print_avg_table(df, title_header="STATS FOR ALL SEASONS:")
 
 
         elif query_type == QUERY_TYPE.DIST:
@@ -242,19 +266,23 @@ if __name__ == "__main__":
 
         elif query_type == QUERY_TYPE.SEASON_X:
             if query == "cur" or query == "current":
-                season_id = CURRENT_SEASON
+                season_ids = (CURRENT_SEASON,)
             else:
-                season_id = re.match(r"([a-z ]+)([0-9]+)", query).groups()[1] # Splits the string into string value at index 0 and numeric value at index 1
-            df = get_seasons(season_id)
-            print_avg_table(df)
+                season_ids = list(map(int, re.findall(r"\d+", query)))
+                if max(season_ids) > CURRENT_SEASON or min(season_ids) < FIRST_SEASON:
+                    print("One of the queried season IDs are invalid.")
+                    continue
+            df = get_seasons(*season_ids)
+            print_avg_table(df, title_header=f"STATS FOR SEASON{'S' if len(season_ids)>1 else ''} {', '.join(map(str, season_ids))}:")
 
 
         elif query_type == QUERY_TYPE.NEW_SEASON:
             print(f"Are you sure you want to change from season {CURRENT_SEASON} to season {CURRENT_SEASON+1}?")
-            confirmation = input('Type "yes" to confirm:')
+            confirmation = input('Type "yes" to confirm: ')
             if confirmation == "yes":
                 new_season(CURRENT_SEASON+1)
                 print("New season has started!")
+                CURRENT_SEASON+=1
             else:
                 print("Did not change to new season.")
                 continue

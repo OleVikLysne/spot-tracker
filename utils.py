@@ -19,7 +19,7 @@ def load_json(filename: str) -> dict:
         return json.load(f)
     
 def dump_json(filename: str, data) -> None:
-    with open(filename, "w") as f:
+    with open(filename, "w+") as f:
         json.dump(data, f, indent=4)
     
 def get_current_season_id() -> int:
@@ -31,6 +31,22 @@ def get_first_season_id() -> int:
     config = ConfigParser()
     config.read("settings.ini")
     return int(config["GENERAL"]["firstseason"])
+
+def get_track_path() -> str:
+    config = ConfigParser()
+    config.read("settings.ini")
+    if config.has_option("GENERAL", "TRACK_PATH"):
+        return config["GENERAL"]["TRACK_PATH"]
+    else:
+        return "tracks.json"
+
+def get_track_data_path() -> str:
+    config = ConfigParser()
+    config.read("settings.ini")
+    if config.has_option("GENERAL", "TRACK_DATA_PATH"):
+        return config["GENERAL"]["TRACK_DATA_PATH"]
+    else:
+        return "track_data.json"
 
 def update_config(parameter: str, value: str):
     config = ConfigParser()
